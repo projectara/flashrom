@@ -441,7 +441,7 @@ CONFIG_OGP_SPI ?= yes
 CONFIG_BUSPIRATE_SPI ?= yes
 
 # Disable Dediprog SF100 until support is complete and tested.
-CONFIG_DEDIPROG ?= no
+CONFIG_DEDIPROG ?= yes
 
 # Always enable Marvell SATA controllers for now.
 CONFIG_SATAMV ?= yes

@@ -101,8 +101,13 @@ static int dediprog_set_leds(int leds)
 		target_leds = leds;
 	}
 
-	ret = usb_control_msg(dediprog_handle, 0x42, 0x07, 0x09, target_leds,
+	if (dediprog_firmwareversion >= FIRMWARE_VERSION(5,5,1))
+		ret = usb_control_msg(dediprog_handle, 0x42, 0x07, (target_leds << 8) | 0x09, 0x0,
 			      NULL, 0x0, DEFAULT_TIMEOUT);
+	else
+		ret = usb_control_msg(dediprog_handle, 0x42, 0x07, 0x09, target_leds,
+			      NULL, 0x0, DEFAULT_TIMEOUT);
+
 	if (ret != 0x0) {
 		msg_perr("Command Set LED 0x%x failed (%s)!\n",
 			 leds, usb_strerror());
@@ -216,7 +221,27 @@ static int dediprog_spi_bulk_read(struct flashctx *flash, uint8_t *buf,
 	const char count_and_chunk[] = {count & 0xff,
 					(count >> 8) & 0xff,
 					chunksize & 0xff,
-					(chunksize >> 8) & 0xff};
+					(chunksize >> 8) & 0xff,
+					0xff,
+					0x00,
+					(start % 0x10000) & 0xff,
+					((start % 0x10000) >> 8) & 0xff,
+					(start / 0x10000) & 0xff,
+					((start / 0x10000) >> 8) & 0xff};
+        unsigned int count_and_chunk_size;
+
+        /* Reverse engineering note:
+         * ========================
+         * Omitting the added 6 bytes to count_and_chunk[] on SF100 FW 5.5.1
+         * results in SF100 to incorrectly issue 0x0B (Fast Read) command with
+         * start at SPI address 0xF30000 instead of the expected address 0x0.
+         * (On a 8MiB W25Q64.V chip this wraps around to physical address 0x730000).
+         * Possibly a result of SF100 FW 5.5.1 receive data buffer initialization.
+         */
+        if (dediprog_firmwareversion >= FIRMWARE_VERSION(5,5,1))
+                count_and_chunk_size = 10;
+        else
+                count_and_chunk_size = 4;
 
 	if ((start % chunksize) || (len % chunksize)) {
 		msg_perr("%s: Unaligned start=%i, len=%i! Please report a bug "
@@ -230,10 +255,15 @@ static int dediprog_spi_bulk_read(struct flashctx *flash, uint8_t *buf,
 	/* Command Read SPI Bulk. No idea which read command is used on the
 	 * SPI side.
 	 */
-	ret = usb_control_msg(dediprog_handle, 0x42, 0x20, start % 0x10000,
+	if (dediprog_firmwareversion >= FIRMWARE_VERSION(5,5,1))
+		ret = usb_control_msg(dediprog_handle, 0x42, 0x20, 0x00,
+			      0x00, (char *)count_and_chunk,
+			      count_and_chunk_size, DEFAULT_TIMEOUT);
+	else
+		ret = usb_control_msg(dediprog_handle, 0x42, 0x20, start % 0x10000,
 			      start / 0x10000, (char *)count_and_chunk,
-			      sizeof(count_and_chunk), DEFAULT_TIMEOUT);
-	if (ret != sizeof(count_and_chunk)) {
+			      count_and_chunk_size, DEFAULT_TIMEOUT);
+	if (ret != count_and_chunk_size) {
 		msg_perr("Command Read SPI Bulk failed, %i %s!\n", ret,
 			 usb_strerror());
 		return 1;
@@ -316,8 +346,36 @@ static int dediprog_spi_bulk_write(struct flashctx *flash, const uint8_t *buf, u
 	 * space in a USB bulk transfer must be filled with 0xff padding.
 	 */
 	const unsigned int count = len / chunksize;
-	const char count_and_cmd[] = {count & 0xff, (count >> 8) & 0xff, 0x00, dedi_spi_cmd};
+	const char count_and_cmd[] = {count & 0xff,
+					(count >> 8) & 0xff,
+					0x00,
+					dedi_spi_cmd,
+					0xff,
+					0x00,
+					(start % 0x10000) & 0xff,
+					((start % 0x10000) >> 8) & 0xff,
+					(start / 0x10000) & 0xff,
+					((start / 0x10000) >> 8) & 0xff};
+	unsigned int count_and_cmd_size;
 	char usbbuf[512];
+
+	/* Reverse engineering note:
+	 * ========================
+	 * Omitting the added 6 bytes to count_and_cmd[] on SF100 FW 5.5.1
+	 * results in SF100 to incorrectly issue 0x02 (Page Program) command with
+	 * start at SPI address 0xF30000 instead of the expected address 0x0.
+	 * (On a 8MiB W25Q64.V chip this wraps around to physical address 0x730000).
+	 * Possibly a result of SF100 FW 5.5.1 receive data buffer initialization.
+	 *
+	 * Issuing a single spi_bulk_write() command with this appendage will
+	 * correct the addressing so that all further spi_bulk_write() commands
+	 * (with or without the appendage) will start at SPI address 0x0.
+	 * Only a  power cycle of the SF100 will reintroduce the error.
+	 */
+	if (dediprog_firmwareversion >= FIRMWARE_VERSION(5,5,1))
+		count_and_cmd_size = 10;
+	else
+		count_and_cmd_size = 4;
 
 	/*
 	 * We should change this check to
@@ -342,9 +400,13 @@ static int dediprog_spi_bulk_write(struct flashctx *flash, const uint8_t *buf, u
 	/* Command Write SPI Bulk. No idea which write command is used on the
 	 * SPI side.
 	 */
-	ret = usb_control_msg(dediprog_handle, 0x42, 0x30, start % 0x10000, start / 0x10000,
-			      (char *)count_and_cmd, sizeof(count_and_cmd), DEFAULT_TIMEOUT);
-	if (ret != sizeof(count_and_cmd)) {
+	if (dediprog_firmwareversion >= FIRMWARE_VERSION(5,5,1))
+		ret = usb_control_msg(dediprog_handle, 0x42, 0x30, 0x00, 0x00,
+					(char *)count_and_cmd, count_and_cmd_size, DEFAULT_TIMEOUT);
+	else
+		ret = usb_control_msg(dediprog_handle, 0x42, 0x30, start % 0x10000, start / 0x10000,
+					(char *)count_and_cmd, count_and_cmd_size, DEFAULT_TIMEOUT);
+	if (ret != count_and_cmd_size) {
 		msg_perr("Command Write SPI Bulk failed, %i %s!\n", ret,
 			 usb_strerror());
 		return 1;
@@ -448,9 +510,27 @@ static int dediprog_spi_send_command(struct flashctx *flash,
 		return 1;
 	}
 	
-	ret = usb_control_msg(dediprog_handle, 0x42, 0x1, 0xff,
-			      readcnt ? 0x1 : 0x0, (char *)writearr, writecnt,
-			      DEFAULT_TIMEOUT);
+	if (dediprog_firmwareversion >= FIRMWARE_VERSION(5,5,1))
+		if (*writearr == 0x6  ||		      // Write Enable
+		    *writearr == 0x60 || *writearr == 0xc7 ||  // Chip Erase
+		    *writearr == 0x52 || *writearr == 0xd8 || // Block Erase
+		    *writearr == 0x20)			         // Sector Erase
+			/* These commands are treated differently otherwise
+			 * Read Status Register-1 (05h) will return incorrect
+			 * results for WEL and WIP bits
+			 * (at least on Winbond W25Q64BV Flash)
+			 */
+			ret = usb_control_msg(dediprog_handle, 0x42, 0x1, 0x0,
+                                 0x0, (char *)writearr, writecnt,
+                                 DEFAULT_TIMEOUT);
+		else
+			ret = usb_control_msg(dediprog_handle, 0x42, 0x1, 0x1,
+                                 0x0, (char *)writearr, writecnt,
+			         DEFAULT_TIMEOUT);
+	else
+		ret = usb_control_msg(dediprog_handle, 0x42, 0x1, 0xff,
+			         readcnt ? 0x1 : 0x0, (char *)writearr, writecnt,
+			         DEFAULT_TIMEOUT);
 	if (ret != writecnt) {
 		msg_perr("Send SPI failed, expected %i, got %i %s!\n",
 			 writecnt, ret, usb_strerror());
@@ -459,8 +539,13 @@ static int dediprog_spi_send_command(struct flashctx *flash,
 	if (!readcnt)
 		return 0;
 	memset(readarr, 0, readcnt);
-	ret = usb_control_msg(dediprog_handle, 0xc2, 0x01, 0xbb8, 0x0000,
-			     (char *)readarr, readcnt, DEFAULT_TIMEOUT);
+
+	if (dediprog_firmwareversion >= FIRMWARE_VERSION(5,5,1))
+		ret = usb_control_msg(dediprog_handle, 0xc2, 0x1, 0x1, 0x0,
+			         (char *)readarr, readcnt, DEFAULT_TIMEOUT);
+	else
+		ret = usb_control_msg(dediprog_handle, 0xc2, 0x1, 0xbb8, 0x0000,
+			         (char *)readarr, readcnt, DEFAULT_TIMEOUT);
 	if (ret != readcnt) {
 		msg_perr("Receive SPI failed, expected %i, got %i %s!\n",
 			 readcnt, ret, usb_strerror());
@@ -485,6 +570,12 @@ static int dediprog_check_devicestring(void)
 			 " String!\n");
 		return 1;
 	}
+	/* Reverse engineering note:
+	 * ========================
+	 * Dediprog Software SF6.0.4.33 application sends the devicestring
+	 * command with wValue and wIndex values of 0x0 instead of 0xff.
+	 * Both commands yield the same result, so nothing is changed for now.
+         */
 	/* Command Receive Device String. */
 	memset(buf, 0, sizeof(buf));
 	ret = usb_control_msg(dediprog_handle, 0xc2, 0x8, 0xff, 0xff, buf,

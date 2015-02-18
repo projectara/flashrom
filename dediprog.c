@@ -594,6 +594,18 @@ static int dediprog_check_devicestring(void)
 		msg_perr("Unexpected firmware version string!\n");
 		return 1;
 	}
+
+	/* Recent SF100 exemplars have incremented the major version number
+	 * from 6 to 5, specifically from 5.5.02 to 6.5.02.  Treating the
+	 * firmware as if it were version 5.x.x appears to work.
+	 */
+	if (fw[0] == 6) {
+		msg_pinfo("Treating SF100 firmware version %d.%d.%d as if it"
+			  " were %d.%d.%d\n",
+			  fw[0], fw[1], fw[2], 5, fw[1], fw[2]);
+		fw[0] = 5;
+	}
+
 	/* Only these versions were tested. */
 	if (fw[0] < 2 || fw[0] > 5) {
 		msg_perr("Unexpected firmware version %d.%d.%d!\n", fw[0],

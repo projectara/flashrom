@@ -85,7 +85,7 @@
 
 #if !defined (__FLASHROM_BIG_ENDIAN__) && !defined (__FLASHROM_LITTLE_ENDIAN__)
 /* Nonstandard libc-specific macros for determining endianness. */
-#if defined(__GLIBC__)
+#if defined(__GLIBC__) || defined(__BIONIC__)
 #include <endian.h>
 #if BYTE_ORDER == LITTLE_ENDIAN
 #define __FLASHROM_LITTLE_ENDIAN__ 1

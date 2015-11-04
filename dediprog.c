@@ -896,7 +896,7 @@ int dediprog_init(void)
 	struct usb_device *dev;
 	char *voltage, *device, *spispeed, *target_str;
 	int spispeed_idx = 1;
-	int millivolt = 3500;
+	int millivolt = 1800;
 	long usedevice = 0;
 	long target = 1;
 	int i, ret;
